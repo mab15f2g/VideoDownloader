@@ -8,6 +8,7 @@ import threading
 import urllib.request
 import zipfile
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 from typing import Optional
 import tkinter as tk
 from tkinter import messagebox, scrolledtext
@@ -315,6 +316,27 @@ class YtDlpGui:
 
         return True
 
+    def detect_playlist_url(self, url: str) -> bool:
+        try:
+            parsed = urlparse(url)
+            query = parse_qs(parsed.query)
+            return "list" in query and bool(query["list"])
+        except Exception:
+            return "list=" in url
+
+    def ask_playlist_mode(self, url: str) -> Optional[bool]:
+        if not self.detect_playlist_url(url):
+            return None
+
+        answer = messagebox.askyesnocancel(
+            "Playlist erkannt",
+            "Im Link wurde eine Playlist erkannt.\n\n"
+            "Ja = alle Lieder herunterladen\n"
+            "Nein = nur das erste Lied herunterladen\n"
+            "Abbrechen = Vorgang abbrechen",
+        )
+        return answer
+
     def start_download(self) -> None:
         url = self.url_var.get().strip()
         mode = self.mode_var.get()
@@ -327,12 +349,17 @@ class YtDlpGui:
         if not self.ensure_dependencies(needs_ffmpeg=needs_ffmpeg):
             return
 
+        playlist_mode = self.ask_playlist_mode(url)
+        if playlist_mode is None and self.detect_playlist_url(url):
+            self.log("Download vor dem Start abgebrochen.")
+            return
+
         self.set_busy(True)
         self.cancel_requested = False
         self.log(f"Starte Download ({mode.upper()}): {url}")
         threading.Thread(
             target=self.download_worker,
-            args=(url, mode),
+            args=(url, mode, playlist_mode),
             daemon=True,
         ).start()
 
@@ -348,9 +375,16 @@ class YtDlpGui:
         except Exception as exc:
             self.log(f"Abbruch konnte nicht gesendet werden: {exc}")
 
-    def download_worker(self, url: str, mode: str) -> None:
+    def download_worker(self, url: str, mode: str, playlist_mode: Optional[bool]) -> None:
         output_template = str(DOWNLOAD_DIR / "%(title)s.%(ext)s")
         command = [self.ytdlp_cmd]
+
+        if playlist_mode is True:
+            command.append("--yes-playlist")
+            self.log("Playlist-Modus: alle Lieder werden heruntergeladen.")
+        elif playlist_mode is False:
+            command.append("--no-playlist")
+            self.log("Playlist-Modus: nur das erste Lied wird heruntergeladen.")
 
         if mode == "mp3":
             command += [
